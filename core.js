@@ -1,0 +1,732 @@
+const BLANK = "&nbsp;"
+const MAX_INV = 6
+
+function r(c) {
+    return Math.floor(Math.random() * c)
+}
+
+Array.prototype.shuffle = function () {
+    var temp, loc
+    for (var i = this.length - 1; i > 0; i--) {
+        loc = r(i + 1)
+        temp = this[i]
+        this[i] = this[loc]
+        this[loc] = temp
+    }
+}
+
+String.prototype.toCapitalCase = function () {
+    return this[0].toUpperCase() + this.substring(1)
+}
+
+class Obj {
+    constructor(icon, colour) {
+        this.icon = icon
+        this.colour = colour
+    }
+}
+
+class Tile extends Obj {
+    constructor(icon, colour = "", passable = true, outside = false) {
+        super(icon, colour)
+        this.passable = passable
+        this.outside = outside
+        this.interact = () => {}
+        //this.seen = outside; //XX Visiblity function removed
+    }
+}
+
+class Lever extends Tile {
+    constructor(pulledFunction, outside) {
+        super("/", "", true, outside)
+        this.pulled = false
+        this.pulledFunction = pulledFunction
+        this.interact = function () {
+            this.pulled = !this.pulled
+            this.icon = this.pulled ? "\\" : "/"
+            this.pulledFunction(this.pulled)
+        }
+    }
+}
+
+class Door extends Tile {
+    constructor(openIcon, closeIcon, id, outside) {
+        super(closeIcon, "", false, outside)
+        this.searchId = id
+        this.isOpen = false
+        this.changeStatus = function () {
+            this.isOpen = !this.isOpen
+            this.passable = this.isOpen
+            this.icon = this.isOpen ? openIcon : closeIcon
+        }
+    }
+}
+
+class Loot extends Tile {
+    constructor(value) {
+        super("$")
+        this.collected = false
+        this.interact = function () {
+            if (!this.collected) {
+                this.collected = true
+                playChar.score += value
+                this.icon = BLANK
+            }
+        }
+    }
+}
+
+class Spike extends Tile {
+    constructor(damage = 1) {
+        super("^")
+        this.interact = () => {
+            if (!playChar.is.flying)
+                playChar.lives -= damage
+        }
+    }
+}
+
+var explode = () => {
+    var area = adjacentCoords(playChar)
+    for (var i = 0; i < area.length; i++) {
+        towerMap[area[i].y][area[i].x] = new Tile("*", "", true, false)
+    }
+    return true
+}
+
+var randTeleport = () => {
+    playChar.x += r(20) - 10
+    playChar.y += r(20) - 10
+    return true
+}
+
+var unlock = () => {
+    var area = adjacentCoords(playChar)
+    for (var i = 0; i < area.length; i++) {
+        if ("isOpen" in towerMap[area[i].y][area[i].x]) {
+            towerMap[area[i].y][area[i].x].changeStatus()
+            return true
+        }
+    }
+    return false
+}
+
+var eatFood = () => {
+    if (playChar.lives > 2) return false
+    else {
+        playChar.lives++
+        return true
+    }
+}
+
+class Item extends Obj {
+    constructor(name, x, y) {
+        super("%")
+        this.x = x
+        this.y = y
+        this.name = name || ["Bomb", "Scroll", "Key", "Ration"][r(4)]
+
+        switch (this.name) {
+            case "Bomb":
+                this.use = explode
+                this.usesRemaining = 1
+                break
+
+            case "Scroll":
+                this.use = randTeleport
+                this.usesRemaining = 1
+                break
+
+            case "Key":
+                this.use = unlock
+                this.usesRemaining = 1
+                break
+
+            case "Ration":
+                this.use = eatFood
+                this.usesRemaining = 1
+                break
+
+            default:
+                this.use = () => {}
+                break
+        }
+    }
+}
+
+class Room {
+    constructor(blueprint, horizontalOffset, tileArray) {
+        this.seen = false
+        this.area = {
+            minX: 0,
+            maxX: 0,
+            minY: 0,
+            maxY: 0
+        }
+    }
+}
+
+class Player extends Obj {
+    constructor(icon, colour) {
+        super(icon, colour)
+        this.x = 0
+        this.y = 1
+        this.lives = 3
+        this.score = 0
+        this.inventory = [new Item("Dagger"), new Item("Ration"), new Item("Bomb"), new Item("Key"), null, null]
+        this.is = {
+            moving: true,
+            flying: false, //Useful for debugging
+            burning: false, //Mechanics not added
+            wet: false, //Mechanics not added
+        }
+    }
+}
+
+var playChar = new Player("@", "red")
+var towerMap = []
+const MIN_TOWER_WIDTH = 60
+const MAX_VIEW_HEIGHT = 30
+const SHOW_ALL_ROOMS = true //Visibility isn't quite working yet
+
+var floorItems = []
+var heightVisible = 12; //XX visibility
+
+var alphabet = 'abcdefghijklmnopqrstuvwxyz'
+
+// If a blank lever or door is added, the next blank door or lever will match it... hopefully
+var openLeverCon = []
+var openDoorCon = []
+
+function addStructure(structure, extraTiles = []) {
+    var currentHeight = towerMap.length
+    for (var y = 0; y < structure.length; y++) { //XX
+        var ty = y + currentHeight
+        if (!towerMap[ty]) towerMap[ty] = []
+
+        for (var tx = 0; tx < structure[y].length; tx++) {
+            switch (structure[y][tx]) {
+                default:
+                    if (structure[y][tx].match(/[A-Z]/)) {
+                        var l = new Lever(function () {
+                            moveDoor(this.targetId)
+                        })
+                        l.targetId = structure[y][tx].toLowerCase()
+                        towerMap[ty][tx] = l
+                    } else if (structure[y][tx].match(/[a-z]/)) {
+                        towerMap[ty][tx] = new Door("|", "#", structure[y][tx], false)
+                    } else {
+                        towerMap[ty][tx] = new Tile(structure[y][tx], "", false, false)
+                    }
+                    break
+                case '/':
+                    var t
+                    if (openDoorCon.length > 0) {
+                        t = openDoorCon.pop()
+                        console.log("Door hooked up?")
+                    } else {
+                        t = alphabet.charAt(r(26))
+                        openLeverCon.push(t)
+                    }
+                    towerMap[ty][tx] = new Lever(function () {
+                        moveDoor => t
+                    })
+                    break
+                case '#':
+                    var t
+                    if (openLeverCon.length > 0) {
+                        t = openLeverCon.pop()
+                        console.log("Lever hooked up?")
+                    } else {
+                        t = alphabet.charAt(r(26))
+                        openDoorCon.push(t)
+                    }
+                    towerMap[ty][tx] = new Door("|", "#", t, false)
+                    break
+                case '^':
+                    towerMap[ty][tx] = new Spike()
+                    break
+                case '$':
+                    towerMap[ty][tx] = new Loot(1)
+                    break
+                case '%':
+                    towerMap[ty][tx] = new Tile(BLANK)
+                    floorItems.push(new Item("", tx, ty))
+                    break
+                case '█':
+                    towerMap[ty][tx] = new Tile('█', "", false, false)
+                    break
+                case " ":
+                    towerMap[ty][tx] = new Tile(BLANK)
+                    break
+                case "-":
+                    towerMap[ty][tx] = new Tile("-")
+                    towerMap[ty][tx].alwaysSeen = true
+                    break
+                case ".":
+                    towerMap[ty][tx] = new Tile(BLANK, "", true, true)
+                    break
+                case '!':
+                    towerMap[ty][tx] = new Lever(function (status) {
+                        console.log("Clonk")
+                    })
+                    // if(k>leverEffects.length-1)
+                    // else towerMap[ty][tx] = extraTiles[k++]
+                    break
+            }
+        }
+
+        for (var i = 0; i < extraTiles.length; i++) {
+            var e = extraTiles[i]
+            towerMap[e.y][e.x] = e
+        }
+
+    }
+}
+
+function addStructureString(structure, extraTiles = []) {
+    var output = []
+    for (var y = 0; y < structure.length; y++) {
+        var currentLine = structure[structure.length - y - 1].split('')
+        if (!output[y]) output[y] = []
+
+        for (var x = 0; x < currentLine.length; x++) {
+            output[y][x] = currentLine[x]
+        }
+    }
+    addStructure(output, extraTiles)
+}
+
+function generateRoom(width, height, complexity) {
+    var room = []
+
+    for (var i = 0; i < height; i++) {
+        room[i] = []
+        for (var j = 0; j < width; j++) { //Content
+            if (i == height - 1) room[i][j] = "█"
+            else {
+                if (j < 2 || j > width - 3) room[i][j] = "█"
+                else room[i][j] = " "
+            }
+        }
+    }
+
+    var addWindow = r(2)
+    var addTraps = 5
+    var addLoot = 5
+    var addMaze = r(2)
+    var internalRoom = 0
+
+    if (addWindow) {
+        var windowHeight = r(height - 2) + 1
+        var winSide = r(3)
+        if (winSide == 0 || winSide == 2) {
+            room[windowHeight][0] = " "
+            room[windowHeight][1] = " "
+            towerMap[windowHeight - 1][-1] = new Tile("█", "", false, false) //Incorrect location
+        }
+        if (winSide == 1 || winSide == 2) {
+            room[windowHeight][width - 2] = " "
+            room[windowHeight][width - 1] = " "
+            towerMap[windowHeight - 1][width] = new Tile("█", "", false, false) //Incorrect location
+        }
+    }
+
+    if (addMaze) {
+        var mazeMaterial = ["█", "^"][r(1)]
+        var mC = getMazeCoords(width - 4, height - 1)
+        for (var i = 0; i < mC.length; i++) {
+            room[mC[i].y][mC[i].x + 2] = mazeMaterial
+        }
+    }
+
+    while (internalRoom-- > -1) {
+        var pos = {
+            x: r(width - 4) + 2,
+            y: r(height - 1)
+        }
+        var inRoomHeight = [2, 3, 4][r(3)]
+        var inRoomWidth = [2, 3, 4][r(3)]
+        for (var i = pos.y; i < pos.y + inRoomHeight; i++) {
+            for (var j = pos.x; j < pos.x + inRoomWidth; j++) {
+                if (i < height - 1 && j < width - 2) room[i][j] = " "
+            }
+        }
+    }
+
+
+    for (var i = 0; i < addTraps; i++) {
+        var w = ["^", "#", "!"][r(3)]
+        room[r(height - 1)][r(width - 4) + 2] = w
+    }
+
+    for (var i = 0; i < addLoot; i++) {
+        var w = ["$", "%", "/"][r(3)]
+        room[r(height - 1)][r(width - 4) + 2] = w
+    }
+
+    //var doorLoc = r(width-5)+2; // -5 instead of -4 due to double doors
+    var doorLoc = Math.floor(width / 2) - 1
+    var doorSymbol = alphabet.charAt(r(26))
+    room[height - 1][doorLoc] = doorSymbol
+    room[height - 1][doorLoc + 1] = doorSymbol
+
+    room[r(height - 1)][r(width - 4) + 2] = doorSymbol.toUpperCase()
+
+    return room
+}
+
+var floorComplex = 0
+var leftOffset = 20
+var nextShift = 0
+
+function newFloor() {
+    var output = []
+    var height = 10
+    var width = 20
+
+    leftOffset += nextShift
+    nextShift = 0
+    var currentHeight = towerMap.length - 1
+
+    if (currentHeight > 12) {
+        //switch([0, 1, 0, 2][floorComplex%4]) {
+        switch (r(6)) {
+            case 1: //Tower bends right
+                console.log("Tower bends right")
+                var shift = 5
+                width += shift
+                nextShift = shift
+                break
+
+            case 2: //Tower bends left
+                console.log("Tower bends left")
+                var shift = 5
+                width += shift
+                leftOffset -= shift
+                break
+
+            default:
+                break
+        }
+
+
+        for (var i = leftOffset; i < leftOffset + width; i++) {
+            if (towerMap[currentHeight][i].icon == BLANK) {
+                towerMap[currentHeight][i] = new Tile('█', "", false, false)
+            }
+        }
+    }
+
+    output = generateRoom(width, height, floorComplex++)
+    var leftFill = new Array(leftOffset)
+    leftFill.fill(".")
+    for (var i = 0; i < output.length; i++) {
+        output[i] = leftFill.concat(output[i])
+        while (output[i].length < towerMap[0].length) {
+            output[i].push(".")
+        }
+    }
+
+    addStructure(output)
+}
+
+function fallDown(obj, direction) {
+    obj.is.moving = false
+    var distanceFell = 0
+    var distanceAcross = 0
+    var tick
+    tick = setInterval(function () {
+        if (towerMap[obj.y - 1][obj.x].icon != '&nbsp;' && !towerMap[obj.y - 1][obj.x].passable) {
+            clearInterval(tick)
+            obj.lives -= (distanceFell > 10 ? 1 : 0)
+            obj.is.moving = true
+        } else {
+            obj.y--
+            distanceFell++
+            obj.x -= distanceAcross
+            distanceAcross = Math.floor(Math.sqrt(distanceFell)) * direction
+            obj.x += distanceAcross
+        }
+        displayMap()
+    }, 10)
+}
+
+function moveDoor(id) {
+    for (var i = 0; i < towerMap.length; i++) {
+        for (var j = 0; j < towerMap[i].length; j++) {
+            if (towerMap[i][j].searchId == id) towerMap[i][j].changeStatus()
+        }
+    }
+}
+
+function isEmpty(x, y) {
+    return towerMap[y] && towerMap[y][x] && towerMap[y][x].passable
+}
+
+function isAdjacent(pos1, pos2) {
+    return ((pos1.x == pos2.x + 1 || pos1.x == pos2.x - 1) && pos1.y == pos2.y) || ((pos1.y == pos2.y + 1 || pos1.y == pos2.y - 1) && pos1.x == pos2.x)
+}
+
+function adjacentCoords(obj) {
+    var loc = [{
+        x: 0,
+        y: 0
+    }, {
+        x: 1,
+        y: 0
+    }, {
+        x: -1,
+        y: 0
+    }, {
+        x: 0,
+        y: 1
+    }, {
+        x: 0,
+        y: -1
+    }]
+    var out = []
+    for (var i = 0; i < loc.length; i++) {
+        loc[i].x += obj.x
+        loc[i].y += obj.y
+        if (towerMap[loc[i].y]) {
+            if (towerMap[loc[i].y][loc[i].x]) {
+                out.push(loc[i])
+            }
+        }
+    }
+    return out
+}
+
+function checkVisibility() {
+    var pos = {
+        x: playChar.x,
+        y: playChar.y
+    }
+    while (true) {
+        pos.y++
+        if (pos.y > towerMap.length - 1) break
+        if (pos.x < 1 || pos.x > towerMap[0].length - 1) break
+        if (towerMap[pos.y][pos.x].outside) break
+        heightVisible++
+        if (towerMap[pos.y][pos.x].icon == '█' && //XX error if not in range
+            towerMap[pos.y][pos.x - 1].icon == '█' &&
+            towerMap[pos.y][pos.x + 1].icon == '█') break
+    }
+}
+
+function inView(pos) {
+    if (playChar.y > MAX_VIEW_HEIGHT / 2)
+        return (pos.y < playChar.y + MAX_VIEW_HEIGHT / 2 && pos.y > playChar.y - MAX_VIEW_HEIGHT / 2)
+    else
+        return (pos.y < MAX_VIEW_HEIGHT)
+}
+
+function moveUser(dx, dy) {
+    if (playChar.lives < 1 || !playChar.is.moving)
+        return false
+
+    if (isEmpty(playChar.x + dx, playChar.y + dy)) {
+        playChar.x += dx
+        playChar.y += dy
+        towerMap[playChar.y][playChar.x].interact()
+    }
+
+    for (var i = 0; i < floorItems.length; i++) {
+        if (floorItems[i].y == playChar.y && floorItems[i].x == playChar.x) {
+            for (var j = 0; j < MAX_INV; j++) {
+                if (playChar.inventory[j] == null) {
+                    playChar.inventory[j] = floorItems[i]
+                    floorItems.splice(i--, 1)
+                    break
+                }
+            }
+        }
+    }
+
+    if (towerMap[playChar.y][playChar.x].outside && towerMap[playChar.y - 1][playChar.x].passable && !playChar.is.flying) //Specify more general danger zone XX
+        fallDown(playChar, dx)
+
+    if (playChar.y > heightVisible - 2)
+        checkVisibility()
+
+    displayMap()
+}
+
+function selectItem() {
+    var input = parseInt(prompt("Select item to use: ")) - 1
+    if (isNaN(input)) {
+        console.log("NaN")
+        return false
+    } else if (input < 0 || input > playChar.inventory.length - 1) {
+        console.log("Out of range")
+        return false
+    } else {
+        useItem(input)
+    }
+}
+
+function useItem(n) {
+    if (playChar.inventory[n]) {
+        if (playChar.inventory[n].use())
+            playChar.inventory[n].usesRemaining--
+        if (playChar.inventory[n].usesRemaining < 1)
+            playChar.inventory[n] = null
+    }
+
+    displayMap()
+}
+
+function KeyboardController(keys, repeat) {
+    var timers = {}
+
+    document.onkeydown = function (event) {
+        var key = (event || window.event).keyCode
+        if (!(key in keys))
+            return true
+        if (!(key in timers)) {
+            timers[key] = null
+            keys[key]()
+            if (repeat !== 0)
+                timers[key] = setInterval(keys[key], repeat)
+        }
+        return false
+    }
+
+    document.onkeyup = function (event) {
+        var key = (event || window.event).keyCode
+        if (key in timers) {
+            if (timers[key] !== null)
+                clearInterval(timers[key])
+            delete timers[key]
+        }
+    }
+
+    window.onblur = function () {
+        for (key in timers)
+            if (timers[key] !== null)
+                clearInterval(timers[key])
+        timers = {}
+    }
+}
+
+KeyboardController({
+    37: function () {
+        moveUser(-1, 0)
+    }, //Left
+    38: function () {
+        moveUser(0, 1)
+    }, //Up
+    39: function () {
+        moveUser(1, 0)
+    }, //Right
+    40: function () {
+        moveUser(0, -1)
+    }, //Down
+    65: function () {
+        moveUser(-1, 0)
+    }, //A
+    87: function () {
+        moveUser(0, 1)
+    }, //W
+    68: function () {
+        moveUser(1, 0)
+    }, //D
+    83: function () {
+        moveUser(0, -1)
+    }, //S
+    13: function () {
+        selectItem()
+    }, //Enter
+    49: function () {
+        useItem(0)
+    }, //1
+    50: function () {
+        useItem(1)
+    }, //2
+    51: function () {
+        useItem(2)
+    }, //3
+    52: function () {
+        useItem(3)
+    }, //4
+    53: function () {
+        useItem(4)
+    }, //5
+    54: function () {
+        useItem(5)
+    }, //6
+}, 75)
+
+function getColour(obj) {
+    if (obj.colour != undefined && obj.colour != "") return "<t style='color:" + obj.colour + "'>" + obj.icon + "</t>"
+    else return obj.icon
+}
+
+function displayMap() {
+    if (playChar.lives < 1) playChar.icon = "X"
+
+    var displayString = ""
+    var outputMap = []; //Strings only
+
+    var heightOffset
+    if (playChar.y < MAX_VIEW_HEIGHT / 2) heightOffset = 0
+    else heightOffset = Math.floor(playChar.y - MAX_VIEW_HEIGHT / 2)
+
+    for (var i = heightOffset; i < MAX_VIEW_HEIGHT + heightOffset + 1; i++) {
+        outputMap[i] = []
+        if (!towerMap[i]) {
+            newFloor()
+            return displayMap(); //Should save and continue from here
+        }
+        for (var j = 0; j < towerMap[i].length; j++) {
+            if (i < heightVisible || SHOW_ALL_ROOMS) outputMap[i][j] = getColour(towerMap[i][j])
+            else {
+                if (towerMap[i][j].outside || towerMap[i][j].alwaysSeen) outputMap[i][j] = getColour(towerMap[i][j])
+                else outputMap[i][j] = '█'
+            }
+        }
+    }
+
+    for (var i = 0; i < floorItems.length; i++) {
+        if (floorItems[i].y < heightVisible || SHOW_ALL_ROOMS) {
+            if (inView(floorItems[i])) outputMap[floorItems[i].y][floorItems[i].x] = getColour(floorItems[i])
+        }
+    }
+
+    outputMap[playChar.y][playChar.x] = getColour(playChar)
+
+    for (var i = MAX_VIEW_HEIGHT + heightOffset - 1; i >= heightOffset; i--) {
+        //Goes in reverse order due to screen coords
+        for (var j = 0; j < outputMap[i].length; j++) {
+            displayString += outputMap[i][j]
+        }
+        displayString += "<br>";
+    }
+
+    document.getElementById("mapText").innerHTML = displayString
+    var status_string =
+        "Lives: " + String(playChar.lives) + "<br/>" +
+        "Score: " + String(playChar.score) + "<br/><br/>"
+
+    for (var status in playChar.is) {
+        if (playChar.is.hasOwnProperty(status) && playChar.is[status] && status != "moving") {
+            status_string += status.toCapitalCase()
+        }
+    }
+
+    document.getElementById("player_status").innerHTML = status_string
+
+    var invOut = "<ol>"
+    for (var i = 0; i < playChar.inventory.length; i++) {
+        invOut += "<li>" + (playChar.inventory[i] ? playChar.inventory[i].name : "") + "</li>"
+    }
+    invOut += "</ol"
+    document.getElementById("inventory").innerHTML = invOut
+}
+
+for (var floor of default_tower) {
+    addStructureString(floor)
+}
+
+displayMap()
